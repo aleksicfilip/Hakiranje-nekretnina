@@ -82,7 +82,7 @@ for(i in 1:10){
 }
 
 #ovo je subset onih n-torki koje su u Gradu Zagrebu
-samo_zagreb1 = subset(podaci, lokacija == "Brezovica" |
+samo_zagreb = subset(podaci, lokacija == "Brezovica" |
                        lokacija == "Črnomerec" |
                        lokacija == "Donja Dubrava" |
                        lokacija == "Donji Grad" |
