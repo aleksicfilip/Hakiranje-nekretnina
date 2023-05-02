@@ -1,0 +1,827 @@
+---
+title: "Hakiranje Nekretnina"
+author: "Filip Aleksić, Stipe Bumber, Mate Papak, Niko Perica, Vice Perica"
+date: "2023-04-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Uvod
+
+## Skrepanje i uređivanje podataka
+
+```{r echo=T, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(rvest)
+library(dplyr)
+library(rgdal)
+library(ggplot2)
+library(sf)
+library(stringr) 
+library(lubridate)
+library(readr)
+library(tm)
+library(wordcloud)
+library(cowplot)
+library(stargazer)
+library(knitr)
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+#ode ide inace skrep ali sad samo vadimo csv
+podaci = read_csv("/Users/perica/Desktop/PODACI.csv")
+kable(podaci[1:5,])
+
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+žup_cro <- data.frame(
+  županija = c(
+    "Virovitičko-podravska",
+    "Koprivničko-križevačka",
+    "Osječko-baranjska",
+    "Istarska",
+    "Dubrovačko-neretvanska",
+    "Sisačko-moslovačka",
+    "Brodsko-posavska",
+    "Karlovačka",
+    "Zadarska",
+    "Vukovarsko-srijemska",
+    "Splitsko-dalmatinska",
+    "Varaždinska",
+    "Krapinsko-zagorska",
+    "Zagrebačka",
+    "Primorsko-goranska",
+    "Šibensko-kninska",
+    "Ličko-senjska",
+    "Bjelovarsko-bilogorska",
+    "Grad Zagreb",
+    "Međimurska",
+    "Požeško-slavonska"
+  )
+)
+
+
+# prosjecni kvadrat po županiji
+avg_cro <- aggregate(kvadrat ~ županija, data = podaci, FUN = mean)
+
+# stand. devijacija
+sd_cro <- aggregate(kvadrat ~ županija, data = podaci, FUN = sd)
+
+# koeficijent varijacije po županiji
+cv_cro <-
+  data.frame(županija = avg_cro$županija,
+             cv = sd_cro$kvadrat / avg_cro$kvadrat)
+
+# broj oglasa po županiji (da vidite broj podataka i odlucimo koliko je "znacajno" za zeleno na karti)
+cnt_cro <-
+  aggregate(lokacija ~ županija, data = podaci, FUN = length)
+
+# merge u fajl koji ima podatke o svakoj županiji
+cro_data <-
+  merge(merge(avg_cro, cv_cro, by = "županija"), cnt_cro, by = "županija")
+cro_data <-
+  merge(žup_cro, cro_data, by = "županija", all.x = TRUE)
+names(cro_data) <-
+  c("županija", "avgKvadrata", "koefVarKvadrata", "brojOglasa")  #stupce preimenovat
+
+#brisanje
+rm(žup_cro,
+   avg_cro,
+   sd_cro,
+   cv_cro,
+   cnt_cro)
+
+kable(cro_data)
+```
+
+## Vizualizacija podataka
+
+PITA
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# županije sortirane silazno po broju oglasa
+cro_data_sorted <- cro_data[order(-cro_data$brojOglasa),]
+
+# Create a new data frame with the top x županija and their corresponding 'brojOglasa' values
+x <- 5
+top_x_zupanija <- data.frame(županija = cro_data_sorted$županija[1:x], 
+                             brojOglasa = cro_data_sorted$brojOglasa[1:x])
+
+# Calculate the total number of 'brojOglasa' for the remaining županija
+ostali_brojOglasa <- sum(cro_data_sorted$brojOglasa[x:length(cro_data_sorted$brojOglasa)], na.rm = TRUE)
+
+# Create a new row for the remaining županija with a label 'ostali'
+ostali_zupanija <- data.frame(županija = "Ostali", brojOglasa = ostali_brojOglasa)
+
+#skupa
+top_x_ostali <- rbind(top_x_zupanija, ostali_zupanija)
+```
+
+PITA
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+piepercent <- round(100*top_x_ostali$brojOglasa/sum(top_x_ostali$brojOglasa), 1)
+piepercent[length(piepercent)] <- round(100 - sum(piepercent[-length(piepercent)]), 1)
+
+pie(piepercent,
+    labels = paste(top_x_ostali$županija, paste0(piepercent, "%")),
+    main = "PITA KRUMPIRUŠA", 
+    col = rainbow(length(top_x_ostali$brojOglasa)))
+
+
+rm(ostali_brojOglasa, ostali_zupanija, x, piepercent)
+```
+
+VIOLINICE
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# Create a vector of all županija names
+all_zupanije <- unique(cro_data_sorted$županija)
+
+# Get the names of the županije not in top_x_županija
+ostale_zupanije <- setdiff(all_zupanije, top_x_zupanija$županija)
+
+
+# Replace the names of the županije not in top_x_županija with 'Ostali'
+podaci_renamed <-
+  within(podaci, županija[županija %in% ostale_zupanije] <-
+           'Ostali')
+
+# Convert županija variable to a factor with the desired order
+podaci_renamed$županija <-
+  factor(podaci_renamed$županija, levels = top_x_ostali$županija)
+
+```
+
+VIOLINICE
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# Create the violin plot
+ggplot(data = podaci_renamed, aes(x = županija, y = kvadrat, color = županija)) +
+  geom_violin() +
+  labs(title = "Violinice",
+       x = "Županija",
+       y = "Kvadrat") +
+  geom_boxplot(width = 0.1) +
+  guides(color = FALSE)
+
+
+rm(cro_data_sorted, all_zupanije, ostale_zupanije, podaci_renamed, top_x_ostali, top_x_zupanija)
+
+```
+
+KARTA I PODACI (CRO)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide'}
+# karta
+cro_map <-
+  readOGR("/Users/perica/Desktop/matina_sranja", "Croatia_map")
+
+# spajanje tih podataka s kartom u zajednicki fajl
+cro_data_map <-
+  merge(
+    cro_map,
+    cro_data,
+    by.x = "County",
+    by.y = "županija",
+    all.x = TRUE
+  )
+cro_data_map <- st_as_sf(cro_data_map)       #bolji format
+
+#brisanje
+rm(cro_map)
+```
+
+PLOTIRANJE (CRO)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, out.width="400%", out.height="400%"}
+# avg cijena po kv CRO
+ggplot(cro_data_map) +
+  geom_sf(aes(fill = round(avgKvadrata, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#efedf5",
+    high = "#3f007d",
+    #raspon boja županija, opcionalno za boju onih bez podataka ide: na.value = "boja"
+    breaks = c(1000, 1650, 2250, 2850, 3500),
+    limits = c(1000, 3500)
+  ) +
+  theme_void() +       #tema da nema rešetki priko karte
+  labs(title = "Prosječna cijena po kvadratu u Hrvatskoj",
+       fill = "Cijena po metru kvadratnom (€)",
+       caption = "Zelene županije - značajna količina podataka\nCrne županije - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(avgKvadrata) |
+        is.null(avgKvadrata),
+      County,
+      paste0(County, "\n", "€", sprintf("%.2f", round(avgKvadrata, 2)))
+    )),
+    #ako nema podataka, onda samo ime županije
+    size = 2.5,
+    #za tekst županija je sve dalje
+    fontface = "bold",
+    color = ifelse(
+      cro_data_map$brojOglasa < 40 |
+        is.na(cro_data_map$brojOglasa) |
+        is.null(cro_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    #zeleni imaju znacajno podataka, crni ne
+    fill = "#F2F3F4",
+    label.padding = unit(0.15, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0.001
+  )
+
+# koef var CRO
+ggplot(cro_data_map) +
+  geom_sf(aes(fill = round(koefVarKvadrata * 100, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#deebf7",
+    high = "#08306b",
+    breaks = c(0, 10, 20, 30, 40, 50),
+    limits = c(0, 50)
+  ) +
+  theme_void() +
+  labs(title = "Koeficijent varijacije cijene kvadrata u Hrvatskoj",
+       fill = "Koeficijent varijacije (%)",
+       caption = "Zelene županije - značajna količina podataka\nCrne županije - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(koefVarKvadrata) |
+        is.null(koefVarKvadrata) ,
+      County,
+      paste0(County, "\n", sprintf("%.2f", round(koefVarKvadrata, 2) * 100), "%")
+    )),
+    size = 2.5,
+    fontface = "bold",
+    color = ifelse(
+      cro_data_map$brojOglasa < 40 |
+        is.na(cro_data_map$brojOglasa) |
+        is.null(cro_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    fill = "#F2F3F4",
+    label.padding = unit(0.15, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0.001
+  )
+
+rm(cro_data_map)
+```
+
+KARTA I PODACI (ZG)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide'}
+kvart_zg <-
+  data.frame(
+    lokacija = c(
+      "Brezovica",
+      "Črnomerec",
+      "Donja Dubrava",
+      "Donji Grad",
+      "Gornja Dubrava",
+      "Gornji Grad - Medveščak",
+      "Maksimir",
+      "Novi Zagreb - Istok",
+      "Novi Zagreb - Zapad",
+      "Pešćenica - Žitnjak",
+      "Podsljeme",
+      "Podsused - Vrapče",
+      "Sesvete",
+      "Stenjevec",
+      "Trešnjevka - Jug",
+      "Trešnjevka - Sjever",
+      "Trnje",
+      "Zagreb - Okolica"
+    )
+  )
+
+# izdvojimo kvartove
+zg_data <-
+  subset(podaci,
+         županija == "Grad Zagreb",
+         select = c("lokacija", "kvadrat"))
+
+# prosjecni kvadrat po kvartovima zga
+avg_zg <- aggregate(kvadrat ~ lokacija, data = zg_data, FUN = mean)
+
+# stand. devijacija
+sd_zg <- aggregate(kvadrat ~ lokacija, data = zg_data, FUN = sd)
+
+# koeficijent varijacije po kvartovima zga
+cv_zg <-
+  data.frame(lokacija = avg_zg$lokacija,
+             cv = sd_zg$kvadrat / avg_zg$kvadrat)
+
+# broj oglasa po kvartovima zga (da vidite broj podataka i odlucimo koliko je "znacajno" za zeleno na karti)
+cnt_zg <-
+  aggregate(kvadrat ~ lokacija, data = zg_data, FUN = length)
+
+# merge u fajl koji ima podatke o svakoj županiji
+zg_data <-
+  merge(merge(avg_zg, cv_zg, by = "lokacija"), cnt_zg, by = "lokacija")
+zg_data <-
+  merge(kvart_zg, zg_data, by = "lokacija", all.x = TRUE)
+names(zg_data) <-
+  c("lokacija", "avgKvadrata", "koefVarKvadrata", "brojOglasa")  #stupce preimenovat
+
+# karta
+zg_map <-
+  readOGR("/Users/perica/Desktop/matina_sranja", "Zagreb_map")
+
+# spajanje tih podataka s kartom u zajednicki fajl
+zg_data_map <-
+  merge(zg_map,
+        zg_data,
+        by.x = "District",
+        by.y = "lokacija",
+        all.x = TRUE)
+zg_data_map <- st_as_sf(zg_data_map)       #pogodniji format
+
+
+#brisanje
+rm(zg_data,
+   kvart_zg,
+   avg_zg,
+   sd_zg,
+   cv_zg,
+   cnt_zg,
+   zg_map)
+```
+
+PLOTIRANJE (ZG)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# avg cijena po kv ZG
+ggplot(zg_data_map) +
+  geom_sf(aes(fill = round(avgKvadrata, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#fcfbfd",
+    high = "#3f007d",
+    #raspon boja kvartova
+    breaks = c(2000, 2500, 3000, 3500),
+    limits = c(2000, 3500)
+  ) +
+  theme_void() +       #tema da nema rešetki priko karte
+  labs(title = "Prosječna cijena po kvadratu u Zagrebu",
+       fill = "Cijena po metru kvadratnom (€)",
+       caption = "Zeleni kvartovi - značajna količina podataka\nCrni kvartovi - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(avgKvadrata) |
+        is.null(avgKvadrata),
+      District,
+      paste0(District, "\n", "€", sprintf("%.2f", round(avgKvadrata, 2)))
+    )),
+    #ako nema podataka, onda samo ime županije
+    size = 2.5,
+    #za tekst kvartova je sve dalje
+    fontface = "bold",
+    color = ifelse(
+      zg_data_map$brojOglasa < 80 |
+        is.na(zg_data_map$brojOglasa) |
+        is.null(zg_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    #zeleni imaju znacajno podataka, crni ne
+    fill = "#F2F3F4",
+    label.padding = unit(0.15, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0.001
+  )
+
+# koef var ZG
+ggplot(zg_data_map) +
+  geom_sf(aes(fill = round(koefVarKvadrata * 100, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#deebf7",
+    high = "#08306b",
+    breaks = c(0, 10, 20, 30, 40),
+    limits = c(0, 40)
+  ) +
+  theme_void() +
+  labs(title = "Koeficijent varijacije cijene kvadrata u Zagrebu",
+       fill = "Koeficijent varijacije (%)",
+       caption = "Zeleni kvartovi - značajna količina podataka\nCrni kvartovi - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(koefVarKvadrata) |
+        is.null(koefVarKvadrata),
+      District,
+      paste0(District, "\n", sprintf("%.2f", round(koefVarKvadrata, 2) * 100), "%")
+    )),
+    size = 2.5,
+    fontface = "bold",
+    color = ifelse(
+      zg_data_map$brojOglasa < 80 |
+        is.na(zg_data_map$brojOglasa) |
+        is.null(zg_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    fill = "#F2F3F4",
+    label.padding = unit(0.15, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0.001
+  )
+
+rm(zg_data_map,cro_data)
+
+```
+
+## Statistika
+
+REGRESIJA
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+### graf cijenje i kvadrature svih oglasa (kontrolni graf) ###
+p3<-ggplot(podaci, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  coord_cartesian(ylim = c(20000, 250000),
+                  xlim = c(15,120), expand = FALSE) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p3 #prokaz grafa
+model <- lm(cijena ~ kvadratura, data = podaci) #definiram regresiju
+summary(model) #prokaz koeficjenata
+rm(model,p3) #brisanje varijabli
+
+```
+
+INDEXI
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide'}
+B=1 #B je koji ces bazni index da ti bude
+
+#definiram vektore za spremanje
+cjene = c()
+velicina = c()
+mjesec = c()
+
+#za cjene iz 2022
+filter=subset(podaci, year(podaci$datumi)==2022)
+for(i in 4:12){
+  mjesec = append(mjesec,paste(as.numeric(i),"/","2022",sep="",collapse=NULL))
+  filter2=subset(filter,month(filter$datumi)==i)
+  velicina=append(velicina,length(filter2$kvadrat))
+  cjene = append(cjene,mean(filter2$kvadrat))
+}
+# za cjene iz 2023
+filter=subset(podaci, year(podaci$datumi)==2023)
+for(i in 1:3){
+  mjesec = append(mjesec,paste(as.numeric(i),"/","2023",sep="",collapse=NULL))
+  filter2=subset(filter,month(filter$datumi)==i)
+  velicina=append(velicina,length(filter2$kvadrat))
+  cjene = append(cjene,mean(filter2$kvadrat))
+}
+
+#racunam indekse
+cjeneB=(cjene/cjene[B])*100
+
+#kreiram tablicu
+tablica=data.frame(cjene,cjeneB,velicina,mjesec)
+Q=tablica #za tablicu
+
+#samo misece probacijen u tip datuma
+tablica$mjesec <- as.Date(paste0("01/", tablica$mjesec), format = "%d/%m/%Y")
+
+# Prikaz indexa (komentirat s deckima ocemo maknit ili ostavit ovu mracnu liniju)
+index <- ggplot(tablica, aes(x=mjesec, y=cjene)) +
+  geom_line(size = 1.5, color = "red") + 
+  geom_point(color = "black") + 
+  geom_smooth(method = "lm", se = TRUE, level=0.95)+
+  scale_y_continuous(breaks = seq(2800,3500,100)) +
+  scale_x_date(date_breaks = "2 months") +
+  ylab("Cijena kvadrata u €") +
+  xlab("") + 
+  ggtitle("Cijene stanova dataseta po datumu") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+theme_linedraw()
+
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+index #prikaz grfa
+
+#koef korelacije
+paste("Koeficjent koorelacije je:",as.character(cor(cjene,c(1:12))))
+
+#moja regresija
+model <- lm(cjene ~ c(1:12), data = tablica)
+summary(model)
+
+Q #prikaz tablice
+
+#rjesavanje varijabli
+rm(B,cjeneB,cjene,i,mjesec,velicina,filter,filter2,index,model,tablica,Q)
+
+```
+
+##RIJEČI
+
+###analiza broja rici
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# Stvaranje novog stupca gdje ce pisati broj rijeci u oglasu za svaki opis
+podaci$br_rijeci = NA 
+opis=podaci$opis
+for (x in 1:length(podaci$naslov)) {
+  my_string <- opis[x]
+  podaci$br_rijeci[x] <- length(strsplit(as.character(my_string), "\\w+")[[1]])
+}
+rm(x,my_string)
+
+# Filtriranje podatka
+filtrirani_podaci <- podaci %>%
+  filter(br_rijeci >=50 & br_rijeci <=600, kvadrat >=1000 & kvadrat <= 8000)
+
+# Prikaz korelacije 
+p1<-ggplot(filtrirani_podaci, aes(y = kvadrat, x = br_rijeci )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  ylab("Cijena po m2") +
+  xlab("Broj riječi u oglasu") +
+  ggtitle("Utjecaj broja riječi na cijenu kvadrata stana") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p1
+rm(p1)
+
+# Linearna regresija za analizu
+summary(lm(kvadrat~ br_rijeci, filtrirani_podaci))
+rm(filtrirani_podaci)
+cor.test(podaci$br_rijeci, podaci$kvadrat, alternative = "greater")
+
+```
+
+### Analiza odredenih rijeci
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+####### trazenje najfrekventnijih rijeci #######
+
+#Novi vektor gdje ce se nalaziti sve rijeci iz svih opisa
+v = character() 
+for (y in 1:length(podaci$naslov)) {
+  a=strsplit(str_squish(gsub("[^[:alpha:]]"," ",opis[y]))," ")
+  v=c(v,a)
+}
+rm(y,a)
+
+# Stvaranje Corpusa
+text_podaci<-Corpus(VectorSource(v)) 
+rm(v)
+
+# Čišćenje Corpusa
+text_1<-tm_map(text_podaci, removeNumbers)
+text_1<-tm_map(text_podaci, removePunctuation)
+rm(text_podaci)
+
+# Stvaranje matrice za analizu
+dtm<- TermDocumentMatrix(text_1)
+m<-as.matrix(dtm)
+k<-sort(rowSums(m), decreasing = TRUE)
+word_freq <- data.frame(word = names(k), frequency = k)
+kable(word_freq[1:25,])
+rm(dtm,m,k,text_1)
+
+```
+
+### Stvaranje stupaca gdje za svaki oglas stoji 1 ako sadrzi odabranu rijec, a 0 ako ne sadrzi
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+#stavranje stupaca
+podaci$more = NA
+podaci$parkirno = NA
+podaci$prizemlje = NA
+podaci$terasa = NA
+
+#stvaranje vektora gdje 
+da_more = vector()
+ne_more = vector()
+da_parking = vector()
+ne_parking = vector()
+da_prizemlje = vector()
+ne_prizemlje = vector()
+da_terasa = vector()
+ne_terasa = vector()
+
+for (i in 1:length(podaci$naslov)) {
+  string_opis = opis[i]
+  string_opis = tolower(string_opis)
+  
+  if (grepl("\\bmor[[:alpha:]]\\b",string_opis)) {
+    podaci$more[i] = 1
+    da_more=c(da_more,podaci$kvadrat[i])
+  } else {
+    podaci$more[i] = 0
+    ne_more=c(ne_more,podaci$kvadrat[i])
+  }
+  
+  if (grepl("\\bparkir[[:alpha:]]*\\b",string_opis)) {
+    podaci$parkirno[i] = 1
+    da_parking=c(da_parking,podaci$kvadrat[i])
+  } else {
+    podaci$parkirno[i] = 0
+    ne_parking=c(ne_parking,podaci$kvadrat[i])
+  }
+  
+  if (grepl("\\bprizem[[:alpha:]]*\\b",string_opis)) {
+    podaci$prizemlje[i] = 1
+    da_prizemlje=c(da_prizemlje,podaci$kvadrat[i])
+  } else {
+    podaci$prizemlje[i] = 0
+    ne_prizemlje=c(ne_prizemlje,podaci$kvadrat[i])
+  }
+  
+  if (grepl("\\bteras[[:alpha:]]*\\b",string_opis)) {
+    podaci$terasa[i] = 1
+    da_terasa=c(da_terasa,podaci$kvadrat[i])
+  } else {
+    podaci$terasa[i] = 0
+    ne_terasa=c(ne_terasa,podaci$kvadrat[i])
+  }
+}
+rm(i,string_opis,opis)
+
+```
+
+###Filtriranje data seta
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+df.1 <- podaci  %>%
+  filter(cijena >=20000 & cijena <=250000, kvadratura >=20 & kvadratura <= 120) %>% 
+  mutate(more_1 = case_when(more == "1" ~ "Stan je blizu mora",
+                            more == "0" ~ "Stan nije blizu mora")) %>% 
+  mutate(prizemlje_1 = case_when(prizemlje == "1" ~ "Stan je u prizemlju",
+                                 prizemlje == "0" ~ "Stan nije u prizemlju")) %>% 
+  mutate(parkirno_1 = case_when(parkirno == "1" ~ "Stan ima parking",
+                                parkirno == "0" ~ "Stan nema parking")) %>% 
+  mutate(terasa_1 = case_when(terasa == "1" ~ "Stan ima terasu",
+                              terasa == "0" ~ "Stan nema terasu")) 
+```
+
+###Regresijski grafovi kada u opisu je rijec more i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p4<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  scale_x_continuous(breaks = seq(20,120,15)) +
+  facet_grid(~more_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p4
+rm(p4)
+#test razlike sredina kod rijeci more
+t.test(da_more, ne_more)
+
+```
+
+### Regresijski grafovi kada u opisu je rijec parkirno i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p5<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="darkgreen")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  scale_x_continuous(breaks = seq(20,120,15)) +
+  facet_grid(~parkirno_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p5
+rm(p5)
+#test razlike sredina kod rijeci parkirno
+t.test(da_parking, ne_parking)
+
+```
+
+### Regresijski grafovi kada u opisu je rijec prizemlje i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p6<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="firebrick")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  scale_x_continuous(breaks = seq(20,120,15)) +
+  facet_grid(~prizemlje_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p6
+rm(p6)
+#test razlike sredina kod rijeci prizemlje
+t.test(da_prizemlje, ne_prizemlje)
+
+```
+
+### Regresijski grafovi kada u opisu je rijec terasa i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p7<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="darkturquoise")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  scale_x_continuous(breaks = seq(20,120,15)) +
+  facet_grid(~terasa_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p7
+rm(p7)
+#test razlike sredina kod rijeci parkirno
+t.test(da_terasa, ne_terasa)
+
+rm(list = ls.str(mode = 'numeric'))
+
+```
+
+### regresiska analiza
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+m3<-lm(cijena~kvadratura + more,df.1)
+m4<-lm(cijena~kvadratura + prizemlje,df.1)
+m5<-lm(cijena~kvadratura + terasa,df.1)
+m6<-lm(cijena~kvadratura + parkirno,df.1)
+stargazer(list(m3,m4,m5,m6), type = "text")
+rm(m3,m4,m5,m6,df.1)
+
+```
+
+## Zaključak

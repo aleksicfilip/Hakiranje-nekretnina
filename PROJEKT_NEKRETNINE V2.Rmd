@@ -1,0 +1,935 @@
+---
+title: "Hakiranje Nekretnina"
+author: "Filip Aleksić, Stipe Bumber, Mate Papak, Niko Perica, Vice Perica"
+date: "2023-03-31"
+output: 
+  html_document: 
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Uvod
+
+Glavna zamisao bila je napraviti interaktivnu radionicu u R programskog jeziku da se prikaže spona ekonomije i programiranja kroz Data Science. Ekonomski temelj analize dolazi iz Urbane ekonomije koja se bavi analizom gradova njihovom strukturom i performansama.
+
+Ideja je bila analizirati ponudu nekretnina u Hrvatskoj. Podatke smo skinuli s <https://besplatnioglasi.eu/nekretnine/.> Fokus analize je bio na stanovima zbog vremenskog ograničenja analize, problematike heterogenosti kuća i zato što smo do ideje došli spontano, a trebalo je sve izrealizirati u četiri tjedna. Analizirali smo prosječnu cijenu kvadrata stana na području Hrvatske i Grada Zagreba, te prosječno odstupanje cijene. Zatim smo postavili hipotezu da li stan ima "početnu cijenu" kao nekretnina, te da li sadržaji poput parkinga, terase ili ako je stan blizu mora utječu na prosječnu cijenu kvadrata. Također smo napravili svojevrsnu procjenu "indexa cijena kvadrata" stana jer smo također izvukli datum oglasa stana.
+
+## Skrepanje i uređivanje podataka
+
+U sljedećem dijelu nalazi se proces data scraping-a i priprema podataka za daljne analize. U odsječcima koda je prikazan ulazak i html kod stranice i prikupljanje željenih podataka. Zanimali su nas podatci poput naslova, cijene, kvadrature, broj soba, lokacije, datum oglašavanja i opis oglasa. Svakom stanu smo izračunali cijenu kvadrata i pridružili mu njegovu županiju. Kreirali smo csv tablicu sa gore navedenim podatcima koju kasnije koristimo kao kostur za naše istraživanje.
+
+```{r echo=T, results='hide', error=FALSE, warning=FALSE, message=FALSE}
+library(rvest)
+library(dplyr)
+library(rgdal)
+library(ggplot2)
+library(sf)
+library(stringr) 
+library(lubridate)
+library(readr)
+library(tm)
+library(wordcloud)
+library(cowplot)
+library(stargazer)
+library(knitr)
+library(kableExtra)
+
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+##KO GOD BUDE STAVLJA SKREP ODE, NEZABORAVI OVAJ POCETNI FOLDER ISTO
+folder = "/Users/Perica/Desktop/matina_sranja"
+#ode ide inace skrep ali sad samo vadimo csv
+podaci = read_csv("//Users/Perica/Desktop/FINAL PODATCI.csv")
+kable(podaci[c(1,2,4,5),],align = 'l',format = "html") %>% 
+  kable_styling(full_width = FALSE, latex_options = c('hold_position', 'striped'),
+  position = "center", font_size = 12)
+
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+# sve županije
+žup_cro <- data.frame(
+  županija = c(
+    "Virovitičko-podravska",
+    "Koprivničko-križevačka",
+    "Osječko-baranjska",
+    "Istarska",
+    "Dubrovačko-neretvanska",
+    "Sisačko-moslovačka",
+    "Brodsko-posavska",
+    "Karlovačka",
+    "Zadarska",
+    "Vukovarsko-srijemska",
+    "Splitsko-dalmatinska",
+    "Varaždinska",
+    "Krapinsko-zagorska",
+    "Zagrebačka",
+    "Primorsko-goranska",
+    "Šibensko-kninska",
+    "Ličko-senjska",
+    "Bjelovarsko-bilogorska",
+    "Grad Zagreb",
+    "Međimurska",
+    "Požeško-slavonska"
+  )
+)
+
+# prosječni kvadrat po županiji
+avg_cro <- aggregate(kvadrat ~ županija, data = podaci, FUN = mean)
+
+# standardna devijacija
+sd_cro <- aggregate(kvadrat ~ županija, data = podaci, FUN = sd)
+
+# koeficijent varijacije po županiji
+cv_cro <-
+  data.frame(županija = avg_cro$županija,
+             cv = sd_cro$kvadrat / avg_cro$kvadrat)
+
+# broj oglasa po županiji
+cnt_cro <-
+  aggregate(lokacija ~ županija, data = podaci, FUN = length)
+
+# spajanje gore navedenih podataka
+cro_data <-
+  merge(merge(avg_cro, cv_cro, by = "županija"), cnt_cro, by = "županija")
+cro_data <-
+  merge(žup_cro, cro_data, by = "županija", all.x = TRUE)
+names(cro_data) <-
+  c("županija", "avgKvadrata", "koefVarKvadrata", "brojOglasa")
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+#brisanje
+rm(žup_cro,
+   avg_cro,
+   sd_cro,
+   cv_cro,
+   cnt_cro)
+```
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+kable(cro_data) %>% 
+  kable_styling(full_width = FALSE, latex_options = c('hold_position', 'striped'),
+  position = "center", font_size = 12)
+```
+
+## Vizualizacija podataka
+
+Vizualizacija podataka je snažan alat koji nam omogućuje da složene informacije predstavimo na jasan i razumljiv način. Uz pomoć vizualnih prikaza, možemo lako identificirati obrasce i anomalije koje bi bile teže primijetiti u tabličnim prikazima. Ovakva vrsta prikaza je često lakša za razumijevanje široj publici, jer nije potrebno specifično akademsko znanje da bi se mogla interpretirati.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# županije sortirane silazno po broju oglasa
+cro_data_sorted <- cro_data[order(-cro_data$brojOglasa),]
+
+# top x županija po broju oglasa
+x <- 5
+top_x_zupanija <- data.frame(županija = cro_data_sorted$županija[1:x], 
+                             brojOglasa = cro_data_sorted$brojOglasa[1:x])
+
+# ostale županije i zbroj njihovih oglasa
+ostali_brojOglasa <- sum(cro_data_sorted$brojOglasa[x:length(cro_data_sorted$brojOglasa)], na.rm = TRUE)
+ostali_zupanija <- data.frame(županija = "Ostali", brojOglasa = ostali_brojOglasa)
+
+# spajanje u jednu tablicu
+top_x_ostali <- rbind(top_x_zupanija, ostali_zupanija)
+```
+
+### Kružni dijagram
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# brojevi oglasa -> postotak
+piepercent <- round(100*top_x_ostali$brojOglasa/sum(top_x_ostali$brojOglasa), 1)
+piepercent[length(piepercent)] <- round(100 - sum(piepercent[-length(piepercent)]), 1)
+# kružni dijagram
+pie(piepercent,
+    labels = paste(top_x_ostali$županija, paste0(piepercent, "%")),
+    main = "Kružni dijagram", 
+    col = rainbow(length(top_x_ostali$brojOglasa)))
+```
+
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+
+rm(ostali_brojOglasa, ostali_zupanija, x, piepercent)
+```
+
+### Vionlinski dijagram
+Violinski dijagram je vizualni prikaz raspodjele podataka koji omogućuje brzo i jednostavno razumijevanje njihove distribucije. Osnovna komponenta dijagrama je "violinski" oblik, gdje širina predstavlja gustoću podataka na y-osi. Linija koja se proteže okomito prikazuje raspon najmanje i najveće vrijednosti, dok se outlieri prikazuju točkama izvan "violinskih" oblika. Kutija unutar violinskih oblika označava interkvartilni raspon (IQR), a crta unutar kutije označava medijan.
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+# sve županije
+all_zupanije <- unique(cro_data_sorted$županija)
+
+# županije koje nisu u top_x_zupanija i zamijeni ih s 'Ostali'
+ostale_zupanije <- setdiff(all_zupanije, top_x_zupanija$županija)
+podaci_renamed <-
+  within(podaci, županija[županija %in% ostale_zupanije] <-
+           'Ostali')
+
+# željeni poredak
+podaci_renamed$županija <-
+  factor(podaci_renamed$županija, levels = top_x_ostali$županija)
+
+# violinski dijagram
+ggplot(data = podaci_renamed, aes(x = županija, y = kvadrat, color = županija)) +
+  geom_violin() +
+  labs(title = "Violinski dijagram",
+       x = "Županija",
+       y = "Kvadratura") +
+  geom_boxplot(width = 0.1) +
+  guides(color = "none")
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+rm(cro_data_sorted, all_zupanije, ostale_zupanije, podaci_renamed, top_x_ostali, top_x_zupanija)
+```
+
+### Podatkovne karte (Hrvatska)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide', comment=FALSE}
+# karta
+cro_map <-
+  readOGR(folder, "Croatia_map")
+
+# spajanje prijašnjih podataka s kartom
+cro_data_map <-
+  merge(
+    cro_map,
+    cro_data,
+    by.x = "County",
+    by.y = "županija",
+    all.x = TRUE
+  )
+# pogodniji format
+cro_data_map <- st_as_sf(cro_data_map)  
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+#brisanje
+rm(cro_map)
+```
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, fig.width = 12, fig.height = 12}
+# prosječna cijena po kvadratu (Hrvatska)
+ggplot(cro_data_map) +
+  geom_sf(aes(fill = round(avgKvadrata, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#efedf5",
+    high = "#3f007d",
+    # raspon boja županija
+    # opcionalno za boju onih bez podataka ide: na.value = "boja"
+    breaks = c(1000, 1650, 2250, 2850, 3500),
+    limits = c(1000, 3500)
+  ) +
+  theme_void() +       # makne rešetke preko karte
+  labs(title = "Prosječna cijena po kvadratu u Hrvatskoj",
+       fill = "Cijena po metru kvadratnom (€)",
+       caption = "Zelene županije - značajna količina podataka\n
+       Crne županije - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(avgKvadrata) |
+        is.null(avgKvadrata),
+      County,  # ako nema podataka, onda samo ime županije
+      paste0(County, "\n", "€", sprintf("%.2f", round(avgKvadrata, 2)))
+    )),
+    size = 2.5,
+    fontface = "bold",
+    color = ifelse(
+      cro_data_map$brojOglasa < 40 |
+        is.na(cro_data_map$brojOglasa) |
+        is.null(cro_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),  # zeleni imaju značajno podataka, crni ne
+    fill = "#F2F3F4",
+    label.padding = unit(0.065, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0,
+    alpha = 0.5,
+    fill.alpha = 0.5, color.alpha = 1
+  ) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        plot.caption = element_text(size = 14))
+
+
+# koeficijent varijacije kvadrature (Hrvatska)
+ggplot(cro_data_map) +
+  geom_sf(aes(fill = round(koefVarKvadrata * 100, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#deebf7",
+    high = "#08306b",
+    breaks = c(0, 10, 20, 30, 40, 50),
+    limits = c(0, 50)
+  ) +
+  theme_void() +
+  labs(title = "Koeficijent varijacije cijene kvadrata u Hrvatskoj",
+       fill = "Koeficijent varijacije (%)",
+       caption = "Zelene županije - značajna količina podataka\nCrne županije - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(koefVarKvadrata) |
+        is.null(koefVarKvadrata) ,
+      County,
+      paste0(County, "\n", sprintf("%.2f", round(koefVarKvadrata, 4) * 100), "%")
+    )),
+    size = 2.5,
+    fontface = "bold",
+    color = ifelse(
+      cro_data_map$brojOglasa < 40 |
+        is.na(cro_data_map$brojOglasa) |
+        is.null(cro_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    fill = "#F2F3F4",
+    label.padding = unit(0.065, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0,
+    alpha = 0.5,
+    fill.alpha = 0.5, color.alpha = 1
+  ) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        plot.caption = element_text(size = 14))
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+rm(cro_data_map)
+```
+
+### Podatkovne karte (Zagreb)
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide'}
+# svi kvartovi
+kvart_zg <-
+  data.frame(
+    lokacija = c(
+      "Brezovica",
+      "Črnomerec",
+      "Donja Dubrava",
+      "Donji Grad",
+      "Gornja Dubrava",
+      "Gornji Grad - Medveščak",
+      "Maksimir",
+      "Novi Zagreb - Istok",
+      "Novi Zagreb - Zapad",
+      "Pešćenica - Žitnjak",
+      "Podsljeme",
+      "Podsused - Vrapče",
+      "Sesvete",
+      "Stenjevec",
+      "Trešnjevka - Jug",
+      "Trešnjevka - Sjever",
+      "Trnje",
+      "Zagreb - Okolica"
+    )
+  )
+
+# izdvojimo kvartove
+zg_data <-
+  subset(podaci,
+         županija == "Grad Zagreb",
+         select = c("lokacija", "kvadrat"))
+
+# prosječni kvadrat po kvartovima
+avg_zg <- aggregate(kvadrat ~ lokacija, data = zg_data, FUN = mean)
+
+# standardna devijacija
+sd_zg <- aggregate(kvadrat ~ lokacija, data = zg_data, FUN = sd)
+
+# koeficijent varijacije po kvartovima
+cv_zg <-
+  data.frame(lokacija = avg_zg$lokacija,
+             cv = sd_zg$kvadrat / avg_zg$kvadrat)
+
+# broj oglasa po kvartovima
+cnt_zg <-
+  aggregate(kvadrat ~ lokacija, data = zg_data, FUN = length)
+
+# spajanje gore navedenih podataka
+zg_data <-
+  merge(merge(avg_zg, cv_zg, by = "lokacija"), cnt_zg, by = "lokacija")
+zg_data <-
+  merge(kvart_zg, zg_data, by = "lokacija", all.x = TRUE)
+names(zg_data) <-
+  c("lokacija", "avgKvadrata", "koefVarKvadrata", "brojOglasa")  #stupce preimenovat
+
+# karta
+zg_map <-
+  readOGR(folder, "Zagreb_map")
+
+# spajanje prijašnjih podataka s kartom
+zg_data_map <-
+  merge(zg_map,
+        zg_data,
+        by.x = "District",
+        by.y = "lokacija",
+        all.x = TRUE)
+# pogodniji format
+zg_data_map <- st_as_sf(zg_data_map)  
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+#brisanje
+rm(zg_data,
+   kvart_zg,
+   avg_zg,
+   sd_zg,
+   cv_zg,
+   cnt_zg,
+   zg_map)
+```
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, fig.width = 12, fig.height = 12}
+# prosječna cijena po kvadratu (Zagreb)
+ggplot(zg_data_map) +
+  geom_sf(aes(fill = round(avgKvadrata, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#fcfbfd",
+    high = "#3f007d",
+    #raspon boja kvartova
+    breaks = c(2000, 2500, 3000, 3500),
+    limits = c(2000, 3500)
+  ) +
+  theme_void() +       #tema da nema rešetki priko karte
+  labs(title = "Prosječna cijena po kvadratu u Zagrebu",
+       fill = "Cijena po metru kvadratnom (€)",
+       caption = "Zeleni kvartovi - značajna količina podataka\nCrni kvartovi - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(avgKvadrata) |
+        is.null(avgKvadrata),
+      District,
+      paste0(District, "\n", "€", sprintf("%.2f", round(avgKvadrata, 2)))
+    )),
+    #ako nema podataka, onda samo ime županije
+    size = 2.5,
+    #za tekst kvartova je sve dalje
+    fontface = "bold",
+    color = ifelse(
+      zg_data_map$brojOglasa < 80 |
+        is.na(zg_data_map$brojOglasa) |
+        is.null(zg_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    fill = "#F2F3F4",
+    label.padding = unit(0.065, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0,
+    alpha = 0.5,
+    fill.alpha = 0.5, color.alpha = 1
+  ) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        plot.caption = element_text(size = 14))
+
+# koeficijent varijacije kvadrature (Zagreb)
+ggplot(zg_data_map) +
+  geom_sf(aes(fill = round(koefVarKvadrata * 100, 2)),
+          color = "gray",
+          lwd = 1) +
+  scale_fill_gradient(
+    low = "#deebf7",
+    high = "#08306b",
+    breaks = c(0, 10, 20, 30, 40),
+    limits = c(0, 40)
+  ) +
+  theme_void() +
+  labs(title = "Koeficijent varijacije cijene kvadrata u Zagrebu",
+       fill = "Koeficijent varijacije (%)",
+       caption = "Zeleni kvartovi - značajna količina podataka\n
+       Crni kvartovi - manja količina podataka") +
+  geom_sf_label(
+    aes(label = ifelse(
+      is.na(koefVarKvadrata) |
+        is.null(koefVarKvadrata),
+      District,
+      paste0(District, "\n", sprintf("%.2f", round(koefVarKvadrata, 4) * 100), "%")
+    )),
+    size = 2.5,
+    fontface = "bold",
+    color = ifelse(
+      zg_data_map$brojOglasa < 80 |
+        is.na(zg_data_map$brojOglasa) |
+        is.null(zg_data_map$brojOglasa),
+      "black",
+      "darkgreen"
+    ),
+    fill = "#F2F3F4",
+    label.padding = unit(0.065, "lines"),
+    label.r = unit(0.2, "lines"),
+    label.size = 0,
+    alpha = 0.5,
+    fill.alpha = 0.5, color.alpha = 1
+  ) +
+  theme(plot.title = element_text(size = 30, face = "bold"),
+        plot.caption = element_text(size = 14))
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+rm(zg_data_map,cro_data)
+```
+
+## Statistika
+
+### LINEARNA REGRESIJA KVADRATURE STANA I NJEGOVE CIJENE
+
+U ovom odjeljku je demonstriran klasičan primjer linearne regresije. Motivacija za linearnu regresiju kao i za mnoge druge ekonomske modele je "zdrava logika" koja se poslije pokušava potkrijepiti rezultatima i statističkim testovima.
+
+Oko linearnosti modela nije bilo nikakvih neslaganja unutar ekipe jer svi imamo taj "osjećaj" da svaki dodatni kvadrat stana jednako poveća cijenu, no što se tiče signifikantnosti slobodnog regresijskog parametra tu smo se našli u neslaganju. Laićki rečeno pitanje je: "ima li stan nekakvu početnu vrijednost na koju se dodaje umnožak broja kvadrata i cijene kvadrata ?"
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+### graf cijenje i kvadrature svih oglasa (kontrolni graf) ###
+p3<-ggplot(podaci, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  coord_cartesian(ylim = c(20000, 250000),
+                  xlim = c(15,120), expand = FALSE) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p3 #prikaz grafa
+model <- lm(cijena ~ kvadratura, data = podaci) #definiram regresiju
+summary(model) #prikaz koeficjenata
+rm(model,p3) #brisanje varijabli
+
+```
+
+Sada nakon rezultata vidimo da nam je linearan model jako kvalitetan. To najviše vidimo po R^2^ koeficijentu koji iznosi 0.43 što govori da je 43% odstupanja zavisne varijable protumačeno modelom. Što povlači da smo našli koeficijent korelacije od 0.65 (srednje jaka pozitivna korelacija), također na ovoliko veliki uzorak testiranje signifikantnosti koeficijenta korelacije će vratiti signifikantan rezultat.
+
+Iz vodećeg koeficijenata pravca zaključujemo da se svakim dodatnim kvadratom cijena stana poveća u prosjeku za 2856 €, dok odgovor na početno pitanje o početnoj vrijednosti stana ne možemo dati neki konkretan odgovor. Naime naša početna vrijednost stana je ispala 5241€ uz to da nam p-vrijednost iznosi 0.0911 što komentiramo kao: "uz razinu značajnosti od 10% (p\<0.1) prihvaćamo da postoji početna cijena stana (odnosno koeficijent nam nije 0, no ako nam je tolerancija na grešku manja od 10% kao npr. 5% (0.05\<p) ne možemo onda ponoviti isti zaključak i postoji mogućnost da nam je koeficijent neznačajno malen". (Koristio se dvosmjerni test značajnosti regresorske varijable)
+
+U suštini na naše pitanje o početnoj vrijednosti stana nažalost ne možemo garantirati nikakav siguran odgovor, no odgovor "DA" je vjerojatniji nego odgovor "NE".
+
+### ANALIZA CIJENE KVADRATA KROZ VRIJEME
+
+U ovome dijelu želimo odgovoriti na pitanje: "Kako se kreću cijene kvadrata kroz vrijeme i koliko dobro to možemo modelirati". Također ćemo sastaviti bazni index cjena za zadnjih godinu dana.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE, results='hide'}
+B=1 #B je baza koju uzimamo za bazni index (1=4/2022 dok je 12=3/2023)
+
+#definiram vektore za spremanje
+cjene = c()
+velicina = c()
+mjesec = c()
+
+#za cjene iz 2022
+filter=subset(podaci, year(podaci$datumi)==2022)
+for(i in 4:12){
+  mjesec = append(mjesec,paste(as.numeric(i),"/","2022",sep="",collapse=NULL))
+  filter2=subset(filter,month(filter$datumi)==i)
+  velicina=append(velicina,length(filter2$kvadrat))
+  cjene = append(cjene,mean(filter2$kvadrat))
+}
+# za cjene iz 2023
+filter=subset(podaci, year(podaci$datumi)==2023)
+for(i in 1:3){
+  mjesec = append(mjesec,paste(as.numeric(i),"/","2023",sep="",collapse=NULL))
+  filter2=subset(filter,month(filter$datumi)==i)
+  velicina=append(velicina,length(filter2$kvadrat))
+  cjene = append(cjene,mean(filter2$kvadrat))
+}
+
+#racunam indekse
+cjeneB=(cjene/cjene[B])*100
+
+#kreiram tablicu
+tablica=data.frame(cjene,cjeneB,velicina,mjesec)
+Q=tablica #za tablicu
+
+#samo misece probacijen u tip datuma
+tablica$mjesec <- as.Date(paste0("01/", tablica$mjesec), format = "%d/%m/%Y")
+
+# Definiram index kao graf
+index <- ggplot(tablica, aes(x=mjesec, y=cjene)) +
+  geom_line(size = 1.5, color = "red") + 
+  geom_point(color = "black") + 
+  geom_smooth(method = "lm", se = TRUE, level=0.99)+
+  scale_y_continuous(breaks = seq(2800,3500,100)) +
+  scale_x_date(date_breaks = "2 months") +
+  ylab("Cijena kvadrata u €") +
+  xlab("") + 
+  ggtitle("Cijene stanova dataseta po datumu") +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+theme_linedraw()
+
+```
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+index #prikaz grfa
+
+```
+
+Iz grafa prosječnih cijena po mjesecu čitamo da bi linearan model opet mogao zadovoljiti naše potrebe modeliranja **(na kratak rok !)**.
+
+Iako "logički" eksponencijalni model ima više smisla za ovaj slučaj jer: "vrijednost novca opada eksponencijalno (prosječna inflacija je 2-3% godišnje) što utječe da vrijednost stana ( kojemu je stvarna vrijednost fiksna ) mjereći u FIAT valuti raste eksponencijalno".
+
+Naša opravdanja korištenja linearnog modela su:
+
+1\. Svaka funkcija se lokalno može proizvoljno dobro aproksimirati, a eksponencijalne funkcije koje imaju koeficijent manji od 0.02 u eksponent uz x prate jako blizu linearnu funkciju za prvih 10-etak članova. Odnosno e^x\*0.02^ ≈ 1.02^x^ ≈ 1+x\*0.02 (uz uvjet x ≤10 )
+
+2\. Uz znanje da je porast između prvog i zadnjeg podatka oko 15% odnosno mjesečni porast je oko 1.25% zadovoljavamo uvjete naše prve točke i uz varijabilnost podataka koju smo dobili preciznost nam ne treba biti prioritet jer niti ne možemo napraviti nešto bolje od "grube aproksimacije"
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+#koef korelacije
+paste("Koeficjent koorelacije je:",as.character(cor(cjene,c(1:12))))
+
+cor.test(cjene,c(1:12))
+
+#moja regresija
+model <- lm(cjene ~ c(1:12), data = tablica)
+summary(model)
+
+Q #prikaz tablice podataka
+
+#rjesavanje varijabli
+rm(B,cjeneB,cjene,i,mjesec,velicina,filter,filter2,index,model,tablica,Q)
+
+```
+
+Nakon provlačenja modela kroz naše podatke kao i obično prvo nas zanimaju koeficijent korelacije i R2.Iz koeficijenta korelacije i njegovog pripadnog testa signifikantnosti zaključujemo da postoji snažna pozitivna korelacija između vremena i prosječne cijene kvadrata stana. Nadalje iz korigiranog R2 koji je 0.60 zaključujemo da nam je model "kvalitetan" (interpretacija korigiranog R2 je ista kao i za obični samo što prirodno R2 ima tendenciju biti veći kako nam je uzorak manji pa bi ga se trebalo korigirati).
+
+Nakon što smo stekli povjerenje u naš model krećemo s komentiranjem modela i dobivenih rezultata. Iz vodećeg koeficijenta pravca saznajemo da se u prosjeku mjesečno cijene kvadrata povećavaju za 36€.
+
+U četvrtom mjesecu 2023. očekujemo prosječnu cijenu da će se nalaziti negdje oko 2743+13\*36=3211€ sa standardnom devijacijom od 101€.
+
+## RIJEČI
+
+U ovom dijelu analize bavimo se analizom opisa u oglasima tj. specifično testiranje korelacije između broja riječi u opisu i cijene stanova te promatranje utječu li određene riječi u opisu na cijenu stanova.
+
+### Analiza broja riječi
+
+Prvo krećemo s analizom broja riječi u oglasu. Promatranjem opisa došli smo na ideju da postoji pozitivna korelacija između broja riječi u opisu i cijene po m2. Imamo dvije glavne motivacije za takvo razmišljanje. Prva motivacija je ta da će vlasnik uređenijeg (skupljeg) stana će imati više "dobrog materijala" za napisati u opis dok vlasnik manje uređenog (jeftinijeg) stana neće imati toliko "dobrog materijala" za staviti u opis. Druga motivacija nam je da ako se vlasnik oglasa potrudio napisati veliki opis onda će se potruditi više oko prodaje nekretnine tj. pokušat će ga prodati po većoj cijeni od vlasnika oglasa koji je napisao manji oglas.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+X3_3_Puni_opis = podaci
+options(scipen=0)
+
+# Stvaranje novog stupca gdje ce pisati broj rijeci u oglasu za svaki opis
+X3_3_Puni_opis$br_rijeci = NA 
+opis=X3_3_Puni_opis$opis
+for (x in 1:length(podaci$naslov)) {
+  my_string <- opis[x]
+  X3_3_Puni_opis$br_rijeci[x] <- length(strsplit(as.character(my_string), "\\w+")[[1]])
+}
+rm(x,my_string)
+
+# Prikaz korelacije 
+p1<-ggplot(X3_3_Puni_opis, aes(y = kvadrat, x = br_rijeci )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  ylab("Cijena po m2") +
+  xlab("Broj riječi u oglasu") +
+  ggtitle("Utjecaj broja riječi na cijenu kvadrata stana") +
+  coord_cartesian(xlim = c(0,600), ylim = c(0,7500)) +
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 15, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 20, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p1
+rm(p1)
+
+# Linearna regresija za analizu
+summary(lm(kvadrat~ br_rijeci, X3_3_Puni_opis))
+rm(filtrirani_podaci)
+
+```
+
+Nakon provođenja programa dobivamo da korelacija uzorka iznosi 0.2268 te da nam je R2=0.04945. Iz grafa i dobivene korelacije možemo naslutiti da je korelacija značajna i veća od 0, no to ipak moramo testirati kako bi bili sigurniji. Za provjeru koristit ćemo se testom o značajnosti Pearsonog koeficijenta korelacije.
+
+```{r echo=T, error=FALSE, message=FALSE, warning=FALSE}
+# Test znacajnosti korelacije
+cor.test(X3_3_Puni_opis$br_rijeci, X3_3_Puni_opis$kvadrat, alternative = "gr")
+```
+
+Iz provedenog testa vidimo da nam je p-vrijednost daleko manja od 0.05 te uz razinu značajnosti od 5% odbacujemo nultu hipotezu da nam je prava korelacija manja ili jednaka 0. Iz testa još vidimo da nam donja granica, 95%-tnog intervala, iznosi 0.2110, a gornja 1 što u prijevodu znači da s 95% sigurnošću možemo reći da nam se prava korelacija nalazi između 0.2110 i 1. Još jedna od bitnih stvari za komentirati je rezultat R2. U našem slučaju R2 iznosi 0.04945 što znači da je manje od 5% odstupanja zavisne varijable protumačeno modelom. Iz toga bi mogli zaključiti da je naš model jako "loš" (što je i očekivano jer bi bilo apsurdno da možemo modelom predvidjeti cijenu iz informacije o broju riječi u oglasu), no ne smijemo zaboraviti da mi uopće nismo pokušavali napraviti model već samo vidjeti postoji li ikakva korelacija između broja rijeci i cijene po m2.
+
+Za kraj, na hipotezu o tome postoji li korelaciji između broja rijeci i cijene po m2, kao i u svakoj hipotezi iz ekonomije, ne možemo dati 100%-tni da, ali možemo reći da  vrlo vjerojatno postoji slaba korelacija između te dvije varijable.
+
+### Analiza određenih riječi
+
+Nakon analize broja riječi u opisima krećemo s analizom određenih riječi. U ovom dijelu rada promatramo postoji li razlika u cijenama kvadrata stanova između oglasa koji sadrže određene riječi u svojim opisima (npr. more, terasa) te oglasima koji ne sadrži te riječi. Motivaciju ćemo naci u primjeru za riječ more. Stanovi koji su blizu mora će vrlo vjerojatno spomenuti u opisu da se nalazu blizu mora, dok stanovi koji se ne nalazu blizu mora neće uopće spominjati riječ more u svojim opisima i očekujemo da će stanovi blizu mora biti skuplji u odnosu na ostale.
+
+U donjem dijelu koda smo napravili tablicu frekvencije rijeci kako bi nam pomoglo u odluci koje rijeci ćemo promatrati.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+#Novi vektor gdje ce se nalaziti sve rijeci iz svih opisa
+v = character() 
+for (y in 1:length(podaci$naslov)) {
+  a=strsplit(str_squish(gsub("[^[:alpha:]]"," ",opis[y]))," ")
+  v=c(v,a)
+}
+rm(y,a)
+
+# Stvaranje Corpusa
+text_podaci<-Corpus(VectorSource(v)) 
+rm(v)
+
+# Čišćenje Corpusa
+text_1<-tm_map(text_podaci, removeNumbers)
+text_1<-tm_map(text_podaci, removePunctuation)
+rm(text_podaci)
+
+# Stvaranje matrice za analizu
+dtm<- TermDocumentMatrix(text_1)
+m<-as.matrix(dtm)
+k<-sort(rowSums(m), decreasing = TRUE)
+word_freq <- data.frame(word = names(k), frequency = k, row.names = NULL)
+
+kable(word_freq[1:25,]) %>% kable_styling(full_width = FALSE,
+  position = "center", font_size = 12)
+```
+```{r echo=F, error=FALSE, warning=FALSE, message=FALSE}
+rm(dtm,m,k,text_1)
+```
+<br>
+Pomoću tablice odlučili smo se da ćemo promatrati 4 rijeci: more, parking, prizemlje i terasa.
+
+### Provjera sadrži li oglas određenu riječ ili ne
+
+Donji dio koda prolazi kroz sve opise u svim oglasima te traži spominje li se odabrana riječ u opisu. Zbog padeža u hrvatskom jeziku ne možemo samo staviti da nam traži odabranu riječ u nominativu pa smo pomoću regularnih izraza sastavili kod takav da nam traži sve rijeci koje kreću s korijenom te rijeci te "pokupili" sve padeže te rijeci.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+#stavranje stupaca
+X3_3_Puni_opis$more = NA
+X3_3_Puni_opis$parkirno = NA
+X3_3_Puni_opis$prizemlje = NA
+X3_3_Puni_opis$terasa = NA
+
+#stvaranje vektora gdje dijelim na oglase s odredenom rijeci i bez te rijeci
+da_more = vector()
+ne_more = vector()
+da_parking = vector()
+ne_parking = vector()
+da_prizemlje = vector()
+ne_prizemlje = vector()
+da_terasa = vector()
+ne_terasa = vector()
+
+for (i in 1:length(podaci$naslov)) {
+  string_opis = opis[i]
+  string_opis = tolower(string_opis)
+  
+  if (grepl("\\bmor[[:alpha:]]\\b",string_opis)) {
+    X3_3_Puni_opis$more[i] = 1
+    da_more=c(da_more,X3_3_Puni_opis$kvadrat[i])
+  } else {
+    X3_3_Puni_opis$more[i] = 0
+    ne_more=c(ne_more,X3_3_Puni_opis$kvadrat[i])
+  }
+  
+  if (grepl("\\bparkir[[:alpha:]]*\\b",string_opis)) {
+    X3_3_Puni_opis$parkirno[i] = 1
+    da_parking=c(da_parking,X3_3_Puni_opis$kvadrat[i])
+  } else {
+    X3_3_Puni_opis$parkirno[i] = 0
+    ne_parking=c(ne_parking,X3_3_Puni_opis$kvadrat[i])
+  }
+  
+  if (grepl("\\bprizem[[:alpha:]]*\\b",string_opis)) {
+    X3_3_Puni_opis$prizemlje[i] = 1
+    da_prizemlje=c(da_prizemlje,X3_3_Puni_opis$kvadrat[i])
+  } else {
+    X3_3_Puni_opis$prizemlje[i] = 0
+    ne_prizemlje=c(ne_prizemlje,X3_3_Puni_opis$kvadrat[i])
+  }
+  
+  if (grepl("\\bteras[[:alpha:]]*\\b",string_opis)) {
+    X3_3_Puni_opis$terasa[i] = 1
+    da_terasa=c(da_terasa,X3_3_Puni_opis$kvadrat[i])
+  } else {
+    X3_3_Puni_opis$terasa[i] = 0
+    ne_terasa=c(ne_terasa,X3_3_Puni_opis$kvadrat[i])
+  }
+}
+rm(i,string_opis,opis)
+
+```
+
+### Filtriranje data seta
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+
+df.1 <- X3_3_Puni_opis  %>%
+  mutate(more_1 = case_when(more == "1" ~ "Stan je blizu mora",
+                            more == "0" ~ "Stan nije blizu mora")) %>% 
+  mutate(prizemlje_1 = case_when(prizemlje == "1" ~ "Stan je u prizemlju",
+                                 prizemlje == "0" ~ "Stan nije u prizemlju")) %>% 
+  mutate(parkirno_1 = case_when(parkirno == "1" ~ "Stan ima parking",
+                                parkirno == "0" ~ "Stan nema parking")) %>% 
+  mutate(terasa_1 = case_when(terasa == "1" ~ "Stan ima terasu",
+                              terasa == "0" ~ "Stan nema terasu")) 
+```
+
+Nakon filtriranje podataka možemo krenuti na testiranje razlike sredina i stvaranje grafova
+
+### Regresijski grafovi kada je u opisu riječ more i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p4<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="deepskyblue3")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  facet_grid(~more_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  coord_cartesian(xlim = c(0,300), ylim = c(0,1000000)) +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p4
+rm(p4)
+#test razlike sredina kod rijeci more
+t.test(da_more, ne_more)
+
+```
+
+Iz scatter plota i linearne regresije se može naslutiti da bi prosječna cijena kvadrata stanova blizu mora trebala biti veća od stanova koji nisu blizu mora. Ta tvrdnja se testira testom o razlici sredina. Testove za sve rijeci smo obavili na razini značajnosti od 5%. Nakon provođenje testa iz dobivene p-vrijednosti od 2.2*10^-16 možemo odbaciti nultu hipotezu da ne postoji razlika između prosječne cijene kvadrata te iz 95%-tnog intervala signifikantnosti zaključujemo da su stanovi koji su blizu mora skuplji oko 693.11-786.75€ po kvadratu od stanova koji nisu blizu mora.
+
+
+### Regresijski grafovi kada je u opisu riječ parkirno i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p5<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="darkgreen")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  facet_grid(~parkirno_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  coord_cartesian(xlim = c(0,300), ylim = c(0,1000000)) +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p5
+rm(p5)
+#test razlike sredina kod rijeci parkirno
+t.test(da_parking, ne_parking)
+
+```
+
+Analogno kao i za more iz scatter plota i linearne regresija se vidi da bi stanovi s parkingom trebali imati skuplji prosjecni kvadrat od stanova koji nemaju parking. Iz provedenog testa o razlici sredina zakljucujemo da postoji znacajna razlika izmedu prosjecih kvadrata te iz 95%-tnog intervala signifikantnosti zakljucujemo da u prosjeku kvadrat stana s parkirnom je skuplji za oko 355.98-447.84€ od stana bez parkiga.
+
+### Regresijski grafovi kada je u opisu riječ prizemlje i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p6<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="firebrick")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  facet_grid(~prizemlje_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  coord_cartesian(xlim = c(0,300), ylim = c(0,1000000)) +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p6
+rm(p6)
+#test razlike sredina kod rijeci prizemlje
+t.test(da_prizemlje, ne_prizemlje)
+
+```
+
+U slučaju prizemlja, vizualno je puno teze uočiti razliku u prosječnoj cijeni kvadrata između stanova koji se nalazu u prizemlju i koji se ne nalazu u prizemlju nego kod primjera za more i parking. Iz provedenog testa dobivamo da postoji značajna razlika te iz intervala signifikantnosti zaključujemo da se ta razlika nalazi između 112.05-211.27€.
+
+### Regresijski grafovi kada je u opisu riječ terasa i kada nije
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+p7<-ggplot(df.1, aes(y = cijena, x = kvadratura )) + 
+  geom_point(shape=18, color="darkturquoise")+
+  geom_smooth(method=lm, se=FALSE, 
+              color="black") +
+  facet_grid(~terasa_1) +
+  ylab("Cijena stana") +
+  xlab("Kvadratura") +
+  ggtitle("Cijena po m2") +
+  coord_cartesian(xlim = c(0,300), ylim = c(0,1000000)) +
+  theme(axis.text = element_text(size = 16),
+        axis.title = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        plot.title = element_text(size = 30, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 0, r = 0, b = 20, l = 0)),
+        strip.background = element_rect(colour = "black", fill = "white"),
+        strip.text = element_text(face = "bold", size = 16))
+p7
+rm(p7)
+#test razlike sredina kod rijeci parkirno
+t.test(da_terasa, ne_terasa)
+
+rm(list = ls.str(mode = 'numeric'))
+
+```
+
+Za terasu dobivamo ocekivanu vizualnu razliku izmedu grafova te pomocu testa dobivamo da stvarno postoji znacajna razlika u prosjecnim cijenama kvadrata izmedu stanova s terasom i bez terase. Iz intervala signifikantnosti dobivama da u prosjeku stanovi s terasom su skuplji za oko 510.71-606.14€ po kvadratu od stanova bez terase.
+
+### Regresijska analiza
+
+Pomoću donjeg dijela koda dobivamo koeficijente binarne regresije (yi = β0 + β1\*xi + β2*Di) gdje yi predstavlja ukupnu cijenu stana, xi veličinu stana (broj kvadrata) te Di je binarna varijabla koja iznosi 1 ako se spominje određena riječ u opisu, a 0 ako se ta riječ ne spominje u opisu.
+
+```{r echo=T, error=FALSE, warning=FALSE, message=FALSE}
+m3<-lm(cijena~kvadratura + more,df.1)
+m4<-lm(cijena~kvadratura + prizemlje,df.1)
+m5<-lm(cijena~kvadratura + terasa,df.1)
+m6<-lm(cijena~kvadratura + parkirno,df.1)
+stargazer(list(m3,m4,m5,m6), type = "text")
+rm(m3,m4,m5,m6,df.1)
+
+```
+
+Iz koeficijenata uz Di varijablu možemo zaključiti sljedeće tvrdnje.
+
+U prosjeku:
+
+1. Stanovi blizu mora su skuplji za 73428.77€ od stanova udaljenih od mora.
+
+2. Stanovi u prizemlju su skuplji za 14122.73€ od stanova koji nisu u prizemlju.
+
+3. Stanovi s terasom su skuplji za 59277.38€ od stanova bez terase.
+
+4. Stanovi s parkingom su skuplji za 37783.22€ od stanova bez parkinga.
+
+
+## Zaključak

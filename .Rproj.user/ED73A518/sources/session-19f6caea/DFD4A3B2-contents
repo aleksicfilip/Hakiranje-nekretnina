@@ -1,0 +1,165 @@
+library(rvest)
+library(dplyr)
+library(rgdal)
+library(ggplot2)
+library(sf)
+library(stringr) #ovaj je za popravljanje krekiranih (str_replace_all)
+library(ggpattern)
+
+#brise sve objekte iz environment-a
+rm(list = ls())
+
+#vrtim prvih x stranica oglasa u foru
+for(i in 1:5){
+  #kreiram link kao kombinaciju pocetka i broja stranice i ucitavam ga u r
+  link1 = "https://besplatnioglasi.eu/nekretnine/stanovi?lang=hr&page="
+  broj = as.character(i);
+  LINK = paste(link1,broj,sep="",collapse=NULL)
+  page = read_html(LINK)
+  
+  #---------------------------------------------------------------VADIM INFO SA STRANICE---------------------
+  #vadenje vektora sa naslovom i cjenom
+  naslov = page %>% html_nodes(".titleLink") %>% html_text()
+  cijena =  page %>% html_nodes(".actualValue") %>% html_text()
+  
+  #vađenje 4 puta veceg vektora koji sadrzi: kvadraturu,objekt,sobe,lokaciju
+  informacije = page %>% html_nodes(".dataHalfValue") %>% html_text()
+  
+  #sad moran sredit informacije jer tocno svaki 4. daje istu informaciju
+  kvadratura = subset(informacije,c(1:length(informacije))%%4 == 1)
+  objekt = subset(informacije,c(1:length(informacije))%%4 == 2)
+  sobe = subset(informacije,c(1:length(informacije))%%4 == 3)
+  lokacija = subset(informacije,c(1:length(informacije))%%4 == 0)
+  
+  #---------------------------------------------------------------ULAZIM U SVAKI OGLAS I VADIM OPIS I DATUM---------------------  
+  #1. preuzimam dio di su linkovi i spremam kao stringovi, 2. micem prvih 10 slova,
+  #3. uzimam sve do razmaka, 4. skidam zadnje slovo
+  linkovi = page %>% html_nodes(".titleLink") %>% as.character()
+  linkovi=substring(linkovi, first=10, last = 1000000L)
+  linkovi=sub("\\ .*", "", linkovi)
+  linkovi=gsub('.{1}$', '', linkovi)
+  
+  #definiram polje gdje cu spremat datume i opis
+  datumi=c()
+  opis=c()
+  
+  #for petlja koja za svaki link ude u stranicu oglasa
+  #nade klasu koju trazim i dade string koji sredim u datum (ili opis)
+  for(j in 1:length(linkovi))
+  {
+    pagezadatum=read_html(linkovi[j]) #ucita str
+    datum = pagezadatum %>% html_nodes(".detailedTitleHolder") %>% html_text() #nade element i pljune text
+    datum=sub("\\Šifra oglasa:.*", "", datum) #daj sve do sifre oglasa
+    datum=gsub('.{3}$', '', datum) # izbrisi zadnja 3 elementa
+    datum = substr(datum, nchar(datum)-9, nchar(datum)) #daj zadnjih 9 elemenata
+    datumi = append(datumi,datum) #dodaj moj datum u listu datuma
+    
+    
+    opis1 = pagezadatum %>% html_nodes(".detailDataDescription") %>% html_text() #skupljm opis
+    opis = append(opis,opis1) #dodajem opis vektoru
+  }
+  
+  #---------------------------------------------------------------SREĐIVANJE VARIJABLI---------------------  
+  #prebacivanje datuma iz stringa u date(mjesec i godina)
+  datumi = strptime(datumi, format = "%d.%m.%Y")
+  datumi = as.Date(datumi) #datumi <- as.yearmon(datumi)
+
+  #uredivanje cijene (micanje eura i gluposti)
+  cijena = sub(".*~ ", "", cijena) 
+  cijena = sub(" .*", "", cijena)
+  cijena = gsub("[[:punct:]]", "", cijena) #micanje tocke iz cijene(272.345 -> 272345) zbog racunanja
+  cijena = as.numeric(cijena) #pribacivanje stringa u broj
+  
+  
+  #micanje m2 i pribacivanje stringa u broj
+  kvadratura = gsub('.{3}$', '', kvadratura)
+  kvadratura = as.numeric(kvadratura)
+  
+  #definiranje cjene po kvadratu
+  kvadrat = cijena/kvadratura
+  kvadrat = round(kvadrat, 2)
+  
+  #---------------------------------------------------------------KRAJ GLAVNOG FOR-A I SPJANJE PODATAKA---------------------  
+  
+  #ako vadim s prve stranice onda kreiram data.frame, a ako s stranica iza onda ono što izvadim spajam s prijasnjim data.frame
+  if(i==1){podaci = data.frame(naslov,cijena,kvadratura ,objekt,sobe,lokacija,opis, kvadrat,datumi,stringsAsFactors = FALSE)}
+  else {podaci2 = data.frame(naslov,cijena,kvadratura ,objekt,sobe,lokacija,opis, kvadrat,datumi, stringsAsFactors = FALSE); podaci=rbind(podaci,podaci2);}
+}
+
+#---------------------------------------------POPRAVAK NAZIVA I GRUPIRANJE PO ŽUPANIJAMA---------------------------------------
+
+# popravak krekiranih lokacija
+old_values <- c("Mali LoÅ¡inj", "KrÅ¡an", "VaraÅ¾din", "SukoÅ¡an", "TreÅ¡njevka - Sjever", 
+                "PeÅ¡Ä\u0087enica - Å½itnjak", "Gornji Grad - MedveÅ¡Ä\u008dak", "ViÅ¡kovo", 
+                "Ä\u008crnomerec", "ReÅ¡etari", "FaÅ¾ana", "PoreÄ\u008d", "Å½upa DubrovaÄ\u008dka",
+                "ZapreÅ¡iÄ\u0087", "TreÅ¡njevka - Jug", "BaÅ¡ka", "OmiÅ¡alj", "LiÅ¾njan", 
+                "Malinska-DubaÅ¡nica", "Podsused - VrapÄ\u008de", "Veliko TrgoviÅ¡Ä\u0087e", "Ä\u008cavle", 
+                "Å\u00A0ibenik", "ViÅ¡njan", "PaÅ¡man", "Ä\u008cazma", "KaÅ¡tela", "Vinodolska OpÄ\u0087ina", 
+                "FuÅ¾ine", "TuÄ\u008depi", "OrebiÄ\u0087", "MarÄ\u008dana", "KaÅ¡telir-Labinci")
+
+new_values <- c("Mali Lošinj", "Kršan", "Varaždin", "Sukošan", "Trešnjevka - Sjever", 
+                "Pešćenica - Žitnjak", "Gornji Grad - Medveščak", "Viškovo", 
+                "Črnomerec", "Rešetari", "Fažana", "Poreč", "Župa Dubrovačka", 
+                "Zaprešić", "Trešnjevka - Jug", "Baška", "Omišalj", "Ližnjan", 
+                "Malinska-Dubašnica", "Podsused - Vrapče", "Veliko Trgovišće", "Čavle", 
+                "Šibenik", "Višnjan", "Pašman", "Čazma", "Kaštela", "Vinodolska Općina", 
+                "Fužine", "Tučepi", "Orebić", "Marčana", "Kaštelir-Labinci")
+
+replacer <- setNames(new_values, old_values)
+podaci$lokacija <- str_replace_all(podaci$lokacija, replacer)
+
+
+
+# svakom gradu pridružiti njegovu županiju
+lookup_table <- data.frame(grad = c("Čačinci", "Čađavica", "Crnac", "Gradina", "Lukač", "Mikleuš", 
+                                    "Nova Bukovica", "Orahovica", "Pitomača", "Slatina", "Sopje", "Špišić Bukovica", "Suhopolje", "Virovitica", "Virovitica - Okolica", "Voćin", 
+                                    "Zdenci", "Drnje", "Ferdinandovac", "Gola", "Gornja Rijeka", "Hlebine", "Kalinovac", "Kalnik", "Kloštar Podravski", "Koprivnica", "Koprivnica - Okolica", 
+                                    "Koprivnički Bregi", "Koprivnički Ivanec", "Križevci", "Legrad", "Molve", "Novigrad Podravski", "Novo Virje", "Peteranec", "Podravske Sesvete", "Rasinja", 
+                                    "Sokolovac", "Sveti Ivan Žabno", "Sveti Petar Orehovec", "Virje", "Đelekovac", "Đurđevac", "Antunovac", "Beli Manastir", "Belišće", "Bilje", "Bizovac", "Čeminac", 		
+                                    "Čepin", "Darda", "Donja Motičina", "Donji Miholjac", "Draž", "Drenje", "Erdut", "Ernestinovo", "Feričanci", "Gorjani", "Jagodnjak", "Kneževi Vinogradi", "Koška", 
+                                    "Levanjska Varoš", "Magadenovac", "Marijanci", "Našice", "Osijek", "Osijek - Okolica", "Petlovac", "Petrijevci", "Podgorač", "Podravska Moslavina", "Popovac", 
+                                    "Punitovci", "Satnica Đakovačka", "Semeljci", "Šodolovci", "Strizivojna", "Trnava", "Valpovo", "Viljevo", "Viškovci", "Vladislavci", "Vuka", "Đakovo", "Đurđenovac", "Bale", "Barban", "Brtonigla", "Buje", "Buzet", "Cerovlje", "Fažana", "Gračišće", "Grožnjan", "Kanfanar", "Karojba", "Kaštelir-Labinci", "Kršan", "Labin", "Lanišće", "Ližnjan", 
+                                    "Lupoglav", "Marčana", "Medulin", "Motovun", "Novigrad", "Oprtalj", "Pazin", "Pazin - Okolica", "Pićan", "Poreč", "Pula", "Raša", "Rovinj", "Sveta Nedelja", "Sveti Lovreč", "Sveti Petar U Šumi", "Svetvinčenat", "Tar-Vabriga", "Tinjan", "Umag", "Višnjan", "Vižinada", "Vodnjan", "Vrsar", "Žminj", "Blato", "Dubrovačko Primorje", "Dubrovnik", 
+                                    "Dubrovnik - Okolica", "Janjina", "Konavle", "Korčula", "Kula Norinska", "Lastovo", "Lumbarda", "Metković", "Mljet", "Opuzen", "Orebić", "Ploče", "Pojezerje", "Slivno", "Smokvica", "Ston", "Trpanj", "Vela Luka", "Zažablje", "Župa Dubrovačka", "Donji Kukuruzari", "Dvor", "Glina", "Gvozd", "Hrvatska Dubica", "Hrvatska Kostajnica", "Jasenovac", "Kutina", 
+                                    "Lekenik", "Lipovljani", "Majur", "Martinska Ves", "Novska", "Petrinja", "Popovača", "Sisak", "Sisak - Okolica", "Sunja", "Topusko", "Velika Ludina", "Bebrina", "Brodski Stupnik", "Bukovlje", "Cernik", "Davor", "Donji Andrijevci", "Dragalić", "Garčin", "Gornja Vrba", "Gornji Bogićevci", "Gundinci", "Klakar", "Nova Gradiška", "Nova Kapela", "Okučani", "Oprisavci", 
+                                    "Oriovac", "Podcrkavlje", "Rešetari", "Sibinj", "Sikirevci", "Slavonski Brod", "Slavonski Brod - Okolica", "Slavonski Šamac", "Stara Gradiš¡ka", "Staro Petrovo Selo", "Velika Kopanica", "Vrbje", "Vrpolje", "Barilović", "Bosiljevo", "Cetingrad", "Draganić", "Duga Resa", "Generalski Stol", "Josipdol", "Karlovac", "Karlovac - Okolica", "Krnjak", 
+                                    "Lasinja", "Netretić", "Ogulin", "Ozalj", "Plaški", "Rakovica", "Ribnik", "Saborsko", "Slunj", "Tounj", "Vojnić", "Žakanje", "Benkovac", "Bibinje", "Biograd Na Moru", "Galovac", "Gračac", "Jasenice", "Kali", "Kukljica", "Lišane Ostrovičke", "Nin", "Obrovac", "Pag", "Pakoštane", "Pašman", "Polača", "Poličnik", "Posedarje", "Povljana", "Ugljan", 
+                                    "Ražanac", "Sali", "Škabrnja", "Stankovci", "Starigrad", "Sukošan", "Sveti Filip i Jakov", "Tkon", "Vir", "Zadar", "Zadar - Okolica", "Zemunik Donji", "Vrsi", "Privlaka (ZD)", "Novigrad (ZD)", "Andrijaševci", "Babina Greda", "Bogdanovci", "Borovo", "Bošnjaci", "Cerna", "Drenovci", "Gradište", "Gunja", "Ilok", "Ivankovo", "Jarmina", "Lovas", 
+                                    "Markušica", "Negoslavci", "Nijemci", "Nuštar", "Privlaka", "Stari Jankovci", "Stari Mikanovci", "Tompojevci", "Tordinci", "Tovarnik", "Trpinja", "Vinkovci", "Vinkovci - Okolica", "Voćinci", "Vrbanja", "Vukovar", "Vukovar - Okolica", "Županja", "Otok (VU)", "Baška Voda", "Bol", "Brela", "Cista Provo", "Dicmo", "Dugi Rat", "Dugopolje", 
+                                    "Gradac", "Hrvace", "Hvar", "Imotski", "Jelsa", "Kaštela", "Klis", "Komiža", "Lećevica", "Lokvičići", "Lovreč", "Makarska", "Marina", "Milna", "Muć", "Nerežišća", "Okrug", "Omiš", "Otok", "Podbablje", "Podgora", "Podstrana", "Postira", "Prgomet", "Primorski Dolac", "Proložac", "Pučišća", "Runovići", "Seget", "Selca", "Šestanovac", "Sinj", 
+                                    "Solin", "Solin - Okolica", "Šolta", "Split", "Split - Okolica", "Stari Grad", "Sućuraj", "Supetar", "Sutivan", "Trilj", "Trogir", "Trogir - Okolica", "Tučepi", "Vis", "Vrgorac", "Vrlika", "Zadvarje", "Zagvozd", "Zmijavci", "Bednja", "Beretinec", "Breznica", "Breznički Hum", "Cestica", "Donja Voća", "Donji Martijanec", "Gornji Kneginec", 
+                                    "Ivanec", "Jalžabet", "Klenovnik", "Lepoglava", "Ljubešćica", "Ludbreg", "Mali Bukovec", "Maruševec", "Novi Marof", "Petrijanec", "Sračinec", "Sveti Ilija", "Sveti Đurđ", "Trnovec Bartolovečki", "Varaždin", "Varaždin - Okolica", "Varaždinske Toplice", "Veliki Bukovec", "Vidovec", "Vinica", "Visoko", "Bedekovčina", "Budinščina", "Desinić", 
+                                    "Donja Stubica", "Gornja Stubica", "Hrašćina", "Hum Na Sutli", "Jesenje", "Klanjec", "Konjščina", "Kraljevec Na Sutli", "Krapina", "Krapina - Okolica", "Krapinske Toplice", "Kumrovec", "Lobor", "Mače", "Marija Bistrica", "Mihovljan", "Novi Golubovec", "Oroslavje", "Petrovsko", "Pregrada", "Radoboj", "Stubičke Toplice", "Sveti Križ Začretje", 
+                                    "Tuhelj", "Veliko Trgovišće", "Zabok", "Zagorska Sela", "Zlatar", "Zlatar-Bistrica", "Đurmanec", "Bedenica", "Bistra", "Brckovljani", "Brdovec", "Dubrava", "Dubravica", "Dugo Selo", "Dugo Selo - Okolica", "Farkaševac", "Gradec", "Ivanić-Grad", "Ivanić-Grad - Okolica", "Jakovlje", "Jastrebarsko", "Jastrebarsko - Okolica", "Klinča Sela", 
+                                    "Kloštar Ivanić", "Krašić", "Kravarsko", "Križ", "Luka", "Marija Gorica", "Orle", "Pisarovina", "Pokupsko", "Preseka", "Pušća", "Rakovec", "Rugvica", "Samobor", "Samobor - Okolica", "Stupnik", "Sveti Ivan Zelina", "Velika Gorica", "Velika Gorica - Okolica", "Vrbovec", "Zaprešić", "Zaprešić - Okolica", "Žumberak", "Sveta Nedjelja", "Bakar", 
+                                    "Baška", "Brod Moravice", "Čabar", "Čavle", "Cres", "Crikvenica", "Delnice", "Dobrinj", "Fužine", "Jelenje", "Kastav", "Klana", "Kostrena", "Kraljevica", "Krk", "Lokve", "Lovran", "Mali Lošinj", "Malinska-Dubašnica", "Matulji", "Mošćenička Draga", "Mrkopalj", "Novi Vinodolski", "Omišalj", "Opatija", "Opatija - Okolica", "Punat", "Rab", 
+                                    "Ravna Gora", "Rijeka", "Skrad", "Vinodolska Općina", "Viškovo", "Vrbnik", "Vrbovsko", "Biskupija", "Civljane", "Drniš", "Ervenik", "Kijevo", "Kistanje", "Knin", "Murter", "Pirovac", "Primošten", "Promina", "Rogoznica", "Ružić", "Šibenik", "Šibenik - Okolica", "Skradin", "Tisno", "Unešić", "Vodice", "Brinje", "Donji Lapac", "Gospić", 
+                                    "Gospić - Okolica", "Karlobag", "Lovinac", "Novalja", "Otočac", "Perušić", "Plitvička Jezera", "Senj", "Udbina", "Vrhovine", "Berek", "Bjelovar", "Bjelovar - Okolica", "Čazma", "Daruvar", "Dežanovac", "Gareš¡nica", "Grubišno Polje", "Hercegovac", "Ivanska", "Kapela", "Končanica", "Nova Rača", "Rovišće", "Šandrovac", "Severin", "Sirač", 
+                                    "Štefanje", "Velika Pisanica", "Velika Trnovitica", "Veliki Grđevac", "Veliko Trojstvo", "Zrinski Topolovac", "Đulovac", "Brezovica", "Črnomerec", "Donja Dubrava", "Donji Grad", "Gornja Dubrava", "Gornji Grad - Medveščak", "Maksimir", "Novi Zagreb - Istok", "Novi Zagreb - Zapad", "Pešćenica - Žitnjak", "Podsljeme", "Podsused - Vrapče", 
+                                    "Sesvete", "Stenjevec", "Trešnjevka - Jug", "Trešnjevka - Sjever", "Trnje", "Zagreb - Okolica", "Belica", "Čakovec", "Čakovec - Okolica", "Dekanovec", "Domašinec", "Donji Kraljevec", "Donji Vidovec", "Goričan", "Gornji Mihaljevec", "Kotoriba", "Mala Subotica", "Mursko Središće", "Nedelišće", "Orehovica", "Podturen", "Prelog", "Pribislavec", 
+                                    "Selnica", "Šenkovec", "Strahoninec", "Štrigova", "Sveta Marija", "Sveti Juraj Na Bregu", "Sveti Martin Na Muri", "Vratišinec",
+                                    "Brestovac", "Čaglin", "Jakšić", "Kaptol", "Kutjevo", "Lipik", "Pakrac", "Pleternica", "Požega", "Požega - Okolica", "Velika"),
+                           županija = c(rep("Virovitičko-podravska", 17), rep("Koprivničko-križevačka", 26), rep("Osječko-baranjska", 43), rep("Istarska", 41), rep("Dubrovačko-neretvanska", 23), rep("Sisačko-moslovačka", 20), rep("Brodsko-posavska", 29), rep("Karlovačka", 22),
+                                        rep("Zadarska", 34), rep("Vukovarsko-srijemska", 32), rep("Splitsko-dalmatinska", 58), rep("Varaždinska", 29), rep("Krapinsko-zagorska", 33), rep("Zagrebačka", 40), rep("Primorsko-goranska", 36), rep("Šibensko-kninska", 19), rep("Ličko-senjska", 13),
+                                        rep("Bjelovarsko-bilogorska", 24), rep("Grad Zagreb", 18),rep("Međimurska", 25),rep("Požeško-slavonska", 11)))
+
+
+# isti ki og fajl, samo dodamo novi stupac za županije
+podaci <- merge(podaci, lookup_table, by.x = "lokacija", by.y = "grad")
+
+#---------------------------------------------------------------ČIŠĆENJE + BRISANJE VARIJABLI + SEJVANJE---------------------
+
+#ucitavanje i sredivanje podataka (micen neke krekere) 
+podaci = subset(podaci,podaci$kvadratura>15) #micem nekretnine manje od 15 kvadrata
+podaci = subset(podaci,podaci$kvadrat<13000) #micem skuplje od 13k€ 
+podaci = subset(podaci,podaci$kvadratura<1000) #micem vece od 1000 kvadrata
+podaci = subset(podaci, kvadrat > 500) #micem jeftinije od 500€ po kvadratu
+
+#brisemo ekipicu koja nan vise ne triba
+rm(broj); rm(cijena); rm(datum); rm(datumi); rm(i); rm(informacije); rm(j); rm(kvadrat); rm(kvadratura); rm(LINK); rm(link1); rm(linkovi); rm(lokacija);
+rm(naslov); rm(new_values); rm(objekt); rm(old_values); rm(opis); rm(opis1); rm(replacer); rm(sobe); rm(lookup_table); rm(page); rm(pagezadatum); rm(podaci2);
+
+#kremiram csv tamo gdje mu kazem
+write.csv(podaci, "/Users/perica/Downloads/najnajnoviji.csv")
+
+
