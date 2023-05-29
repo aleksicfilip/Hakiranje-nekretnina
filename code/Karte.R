@@ -32,7 +32,7 @@ library(sf)
     "Bjelovarsko-bilogorska",
     "Grad Zagreb",
     "Međimurska",
-    "Požeško-slavonska"
+    "Požeško-slavonska"   
   )
 )
 
